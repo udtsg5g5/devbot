@@ -1,0 +1,149 @@
+import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
+import { successEmbed } from '../../utils/embeds.js';
+import { logEvent } from '../../utils/moderation.js';
+import { logger } from '../../utils/logger.js';
+import { sanitizeMarkdown } from '../../utils/validation.js';
+import { InteractionHelper } from '../../utils/interactionHelper.js';
+
+export default {
+    data: new SlashCommandBuilder()
+        .setName("dm2")
+        .setDescription("Send a direct message to a user (Staff only)")
+        .addUserOption(option =>
+            option
+                .setName("user")
+                .setDescription("The user to send a DM to")
+                .setRequired(true)
+        )
+        .addBooleanOption(option =>
+            option
+                .setName("anonymous")
+                .setDescription("Send the message anonymously (default: false)")
+                .setRequired(false)
+        )
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+        .setDMPermission(false),
+    category: "moderation",
+
+    async execute(interaction, config, client) {
+        // 1. Defer safely within your framework
+        const deferSuccess = await InteractionHelper.safeDefer(interaction);
+        if (!deferSuccess) {
+            logger.warn(`DM interaction defer failed`, {
+                userId: interaction.user.id,
+                guildId: interaction.guildId,
+                commandName: 'dm2'
+            });
+            return;
+        }
+
+        const targetUser = interaction.options.getUser("user");
+        const anonymous = interaction.options.getBoolean("anonymous") || false;
+
+        if (targetUser.bot) {
+            return await InteractionHelper.safeEditReply(interaction, { 
+                content: '❌ You cannot send DMs to bot accounts.' 
+            });
+        }
+
+        // 2. Prompt the user to type their message response
+        await InteractionHelper.safeEditReply(interaction, {
+            content: `📝 Target user: **${targetUser.tag}**. Send your message below.`
+        });
+
+        // 3. Setup a collector to gather your message
+        const filter = m => m.author.id === interaction.user.id;
+        const collector = interaction.channel.createMessageCollector({ 
+            filter, 
+            max: 1,      
+            time: 60000  
+        });
+
+        collector.on('collect', async collectedMessage => {
+            const rawMessage = collectedMessage.content;
+            
+            // Delete the message from chat immediately to keep things clean
+            try { 
+                await collectedMessage.delete(); 
+            } catch (e) { 
+                /* Lacks channel management permissions */ 
+            }
+
+            try {
+                if (rawMessage.length > 2000) {
+                    return await InteractionHelper.safeEditReply(interaction, { 
+                        content: '❌ Messages must be under 2000 characters.' 
+                    });
+                }
+
+                const sanitized = sanitizeMarkdown(rawMessage);
+                const dmChannel = await targetUser.createDM();
+                
+                // 4. Send the message payload out
+                await dmChannel.send({
+                    embeds: [
+                        successEmbed(
+                            anonymous ? "Message from the Staff Team" : `Message from ${interaction.user.tag}`,
+                            sanitized
+                        ).setFooter({
+                            text: `You cannot reply to this message. | Logger ID: ${interaction.id}`
+                        })
+                    ]
+                });
+
+                // 5. Fire framework audit logger
+                await logEvent({
+                    client: interaction.client,
+                    guild: interaction.guild,
+                    event: {
+                        action: "DM Sent",
+                        target: `${targetUser.tag} (${targetUser.id})`,
+                        executor: `${interaction.user.tag} (${interaction.user.id})`,
+                        reason: `Anonymous: ${anonymous ? 'Yes' : 'No'}`,
+                        metadata: {
+                            userId: targetUser.id,
+                            moderatorId: interaction.user.id,
+                            anonymous,
+                            messageLength: sanitized.length
+                        }
+                    }
+                });
+
+                // 6. Return Success confirmation
+                return await InteractionHelper.safeEditReply(interaction, {
+                    content: null, // Clears the original prompt text
+                    embeds: [
+                        successEmbed(
+                            "Success",
+                            `Successfully sent a message to ${targetUser.tag}`
+                        ),
+                    ],
+                });
+
+            } catch (error) {
+                logger.error('DM command error:', error);
+                
+                let errorReplyMessage = `Failed to send DM: ${error.message}`;
+                if (error.code === 50007) {
+                    errorReplyMessage = `Could not send a DM to ${targetUser.tag}. They may have DMs disabled.`;
+                }
+                
+                return await InteractionHelper.safeEditReply(interaction, { 
+                    content: `❌ ${errorReplyMessage}` 
+                });
+            }
+        });
+
+        collector.on('end', async (collected, reason) => {
+            if (reason === 'time') {
+                try {
+                    await InteractionHelper.safeEditReply(interaction, { 
+                        content: '⏳ Command timed out. You took too long to reply.' 
+                    });
+                } catch (e) {
+                    logger.error('Failed to log collector timeout:', e);
+                }
+            }
+        });
+    }
+};
