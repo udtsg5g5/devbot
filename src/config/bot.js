@@ -37,13 +37,13 @@ export const botConfig = {
   commands: {
     // Bot owner user IDs (comma-separated in OWNER_IDS env var).
     // Owners can access owner/admin-level bot commands.
-    owners: process.env.OWNER_IDS?.split(",") || [],
+    owners: process.env.OWNER_IDS?.split("1228052518106304664") || [],
 
     // Default wait time between command uses (in seconds).
     defaultCooldown: 3,
 
     // If true, old commands are removed before re-registering.
-    deleteCommands: false,
+    deleteCommands: true,
 
     // Optional server ID used for testing slash commands quickly.
     testGuildId: process.env.TEST_GUILD_ID,
